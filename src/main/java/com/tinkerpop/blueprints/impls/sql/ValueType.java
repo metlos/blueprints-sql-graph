@@ -54,6 +54,10 @@ enum ValueType {
     }, STRING(String.class) {
         @Override
         public Object convertFromDBType(Object input) {
+            if (input instanceof String) {
+                return input;
+            }
+            
             NClob lob = (NClob) input;
             try {
                 return lob.getSubString(1, (int) lob.length());

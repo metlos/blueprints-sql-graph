@@ -145,16 +145,17 @@ public final class SqlGraph implements ThreadedTransactionalGraph {
     }
 
     public SqlGraph(DataSource dataSource) {
-        this(dataSource, null);
+        this(dataSource, null, null, null, null, null);
     }
 
-    private SqlGraph(DataSource dataSource, Connection connection) {
+    private SqlGraph(DataSource dataSource, Connection connection, String vTable, String eTable, String vpTable,
+                     String epTable) {
         this.dataSource = dataSource;
         this.connection = connection;
-        verticesTableName = "vertices";
-        edgesTableName = "edges";
-        vertexPropertiesTableName = "vertex_properties";
-        edgePropertiesTableName = "edge_properties";
+        verticesTableName = vTable == null ? "vertices" : vpTable;
+        edgesTableName = eTable == null ? "edges" : eTable;
+        vertexPropertiesTableName = vpTable == null ? "vertex_properties" : vpTable;
+        edgePropertiesTableName = epTable == null ? "edge_properties" : epTable;
     }
 
     public void createSchemaIfNeeded() throws SQLException, IOException {
@@ -165,46 +166,54 @@ public final class SqlGraph implements ThreadedTransactionalGraph {
             return;
         } catch (SQLException ignored) {
             //good, the schema doesn't exist. Let's continue
+            connection.rollback();
         }
 
-        String dbName = connection.getMetaData().getDatabaseProductName();
-        String script = dbName + "-schema.sql";
-        InputStream schemaStream = getClass().getClassLoader().getResourceAsStream(script);
-        if (schemaStream == null) {
-            schemaStream = getClass().getClassLoader().getResourceAsStream("schema.sql");
-        }
-
-        if (schemaStream == null) {
-            throw new AssertionError("Could not load the schema creation script.");
-        }
-
-        String contents = null;
-        try (InputStreamReader rdr = new InputStreamReader(schemaStream)) {
-            StringBuilder bld = new StringBuilder();
-            char[] buffer = new char[512];
-
-            int cnt;
-            while ((cnt = rdr.read(buffer)) != -1) {
-                bld.append(buffer, 0, cnt);
+        try {
+            String dbName = connection.getMetaData().getDatabaseProductName();
+            String script = dbName + "-schema.sql";
+            InputStream schemaStream = getClass().getClassLoader().getResourceAsStream(script);
+            if (schemaStream == null) {
+                schemaStream = getClass().getClassLoader().getResourceAsStream("schema.sql");
             }
 
-            contents = bld.toString();
-        }
-
-        contents = contents.replace("%VERTICES%", verticesTableName);
-        contents = contents.replace("%VERTEX_PROPERTIES%", vertexPropertiesTableName);
-        contents = contents.replace("%EDGES%", edgesTableName);
-        contents = contents.replace("%EDGE_PROPERTIES%", edgePropertiesTableName);
-
-        String[] inst = contents.split(";");
-        Statement st = connection.createStatement();
-
-        for (int i = 0; i < inst.length; i++) {
-            // we ensure that there is no spaces before or after the request string
-            // in order to not execute empty statements
-            if (!inst[i].trim().equals("")) {
-                st.executeUpdate(inst[i]);
+            if (schemaStream == null) {
+                throw new AssertionError("Could not load the schema creation script.");
             }
+
+            String contents = null;
+            try (InputStreamReader rdr = new InputStreamReader(schemaStream)) {
+                StringBuilder bld = new StringBuilder();
+                char[] buffer = new char[512];
+
+                int cnt;
+                while ((cnt = rdr.read(buffer)) != -1) {
+                    bld.append(buffer, 0, cnt);
+                }
+
+                contents = bld.toString();
+            }
+
+            contents = contents.replace("%VERTICES%", verticesTableName);
+            contents = contents.replace("%VERTEX_PROPERTIES%", vertexPropertiesTableName);
+            contents = contents.replace("%EDGES%", edgesTableName);
+            contents = contents.replace("%EDGE_PROPERTIES%", edgePropertiesTableName);
+
+            String[] inst = contents.split(";");
+            try (Statement st = connection.createStatement()) {
+                for (int i = 0; i < inst.length; i++) {
+                    // we ensure that there is no spaces before or after the request string
+                    // in order to not execute empty statements
+                    if (!inst[i].trim().equals("")) {
+                        st.executeUpdate(inst[i]);
+                    }
+                }
+            }
+
+            connection.commit();
+        } catch (Throwable t) {
+            connection.rollback();
+            throw t;
         }
     }
 
@@ -212,7 +221,8 @@ public final class SqlGraph implements ThreadedTransactionalGraph {
     public TransactionalGraph newTransaction() {
         try {
             Connection conn = newConnection();
-            return new SqlGraph(dataSource, conn);
+            return new SqlGraph(dataSource, conn, verticesTableName, edgesTableName, vertexPropertiesTableName,
+                    edgePropertiesTableName);
         } catch (SQLException e) {
             throw new SqlGraphException(e);
         }
